@@ -1,0 +1,290 @@
+﻿@page "/"
+@using Microsoft.Extensions.Logging
+@using System.Timers;
+
+@inject IJSRuntime JSRuntime
+@inject ILogger<Index> logger
+@inject TicTacToeState ticTacToeState
+
+<PageTitle>Tic Tac Toe</PageTitle>
+
+<style>
+    table
+    {
+        border-collapse: collapse;
+        width: 300px;
+        height: 300px;
+    }
+
+    td
+    {
+        width: 100px;
+        height: 100px;
+        text-align: center;
+        vertical-align: middle;
+        font-size: 24px;
+        font-weight: bold;
+        border: 1px solid #000;
+    }
+
+    td > button
+    {
+        width: 100%;
+        height: 100%;
+        text-align: center;
+        vertical-align: middle;
+        font-size: 24px;
+        border: 0px;
+    }
+</style>
+
+@if (string.IsNullOrEmpty(Winner))
+{
+    @if (Playing)
+    {
+        @if (CurrentGame != null)
+        {
+            @if (CurrentGame.Joinable)
+            {
+                <p>Game code: @CurrentGameCode</p>
+                <p>Waiting for other player. Share the code to get someone in here!</p>
+            }
+            else
+            {
+                <table>
+                    <tr>
+                        <td><button @onclick="(e) => SetPlacementState(0)">@GetStateText(0)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(1)">@GetStateText(1)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(2)">@GetStateText(2)</button></td>
+                    </tr>
+                    <tr>
+                        <td><button @onclick="(e) => SetPlacementState(3)">@GetStateText(3)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(4)">@GetStateText(4)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(5)">@GetStateText(5)</button></td>
+                    </tr>
+                    <tr>
+                        <td><button @onclick="(e) => SetPlacementState(6)">@GetStateText(6)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(7)">@GetStateText(7)</button></td>
+                        <td><button @onclick="(e) => SetPlacementState(8)">@GetStateText(8)</button></td>
+                    </tr>
+                </table>
+                <p>@IsMyTurn</p>
+            }
+        }
+        else
+        {
+            <span>Something went seriously wrong, just reload bro, you aint saving yourself here.</span>
+        }
+    }
+    else
+    {
+        <div>
+            <input type="text" id="guidInput" @bind="CurrentGameCode" pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" />
+            <button @onclick="JoinGame">Join game</button>
+            <button @onclick="HostGame">Host game</button>
+        </div>
+    }
+}
+else
+{
+    <h2>Game ended</h2>
+    <p>The winner is @Winner</p>
+}
+
+@if (!string.IsNullOrEmpty(ErrorMessage))
+{
+    <p style="color: red;">@ErrorMessage</p>
+}
+
+@code {
+    private string CurrentGameCode = "";
+    private string ErrorMessage = "";
+    private string Winner = "";
+
+    private Timer updateTimer = new();
+    private readonly object timerLock = new object();
+
+    private TicTacToeGame? CurrentGame;
+
+    private TicTacToeSquare PlayerType;
+
+    private bool Playing = false;
+
+    private string IsMyTurn
+    {
+        get
+        {
+            if (CurrentGame == null) return "";
+            if (CurrentGame.CurrentTurn == PlayerType)
+                return "It is your turn";
+            return "It is not your turn";
+        }
+    }
+
+    private string GetStateText(int tile)
+    {
+        if (CurrentGame == null) return " ";
+        var state = CurrentGame.GameGrid[tile];
+        switch (state)
+        {
+            case TicTacToeSquare.None:
+            default:
+                return " ";
+
+            case TicTacToeSquare.Circle:
+                return "O";
+
+            case TicTacToeSquare.Cross:
+                return "X";
+        }
+    }
+
+    protected override Task OnInitializedAsync()
+    {
+        ticTacToeState.OnStateChanged += OnStateChanged;
+        StartUpdateTimer();
+        return Task.CompletedTask;
+    }
+
+    private void StartUpdateTimer()
+    {
+        updateTimer = new Timer(100);
+        updateTimer.Elapsed += (sender, args) => Update();
+        updateTimer.AutoReset = true;
+        updateTimer.Start();
+    }
+
+    private void Update()
+    {
+        lock (timerLock)
+        {
+            if (Playing)
+            {
+                CurrentGame = ticTacToeState.GetGame(Guid.Parse(CurrentGameCode));
+
+                if (CurrentGame == null)
+                {
+                    updateTimer.Stop();
+                }
+                else
+                {
+                    if (CurrentGame.CheckForWin(TicTacToeSquare.Cross))
+                    {
+                        Winner = "Cross";
+                        updateTimer.Stop();
+                    }
+                    else if (CurrentGame.CheckForWin(TicTacToeSquare.Circle))
+                    {
+                        Winner = "Circle";
+                        updateTimer.Stop();
+                    }
+                }
+
+                InvokeAsync(() =>
+                {
+                    StateHasChanged();
+                });
+            }
+        }
+    }
+
+    private void OnStateChanged(Guid guid)
+    {
+        if (CurrentGameCode != guid.ToString()) return;
+
+        // This relates to us!
+        CurrentGame = ticTacToeState.GetGame(guid);
+
+        logger.LogInformation("Game {guid} updated", guid);
+
+        InvokeAsync(() =>
+        {
+            StateHasChanged();
+        });
+    }
+
+    private Task SetPlacementState(int tile)
+    {
+        if (CurrentGame == null) return Task.CompletedTask;
+        if (CurrentGame.GameGrid[tile] == TicTacToeSquare.None)
+        {
+            // Its fair game!
+            if (CurrentGame.CurrentTurn == PlayerType)
+            {
+                CurrentGame.GameGrid[tile] = PlayerType;
+                if (PlayerType == TicTacToeSquare.Cross)
+                    CurrentGame.CurrentTurn = TicTacToeSquare.Circle;
+                else
+                    CurrentGame.CurrentTurn = TicTacToeSquare.Cross;
+                var response = ticTacToeState.UpdateGame(Guid.Parse(CurrentGameCode), PlayerType, CurrentGame);
+
+                switch (response)
+                {
+                    case TicTacToeUpdateResponse.UPDATED:
+                        logger.LogInformation("Game {guid} updated, {tile} now is {type}", CurrentGameCode, tile, PlayerType);
+                        break;
+
+                    case TicTacToeUpdateResponse.DOES_NOT_EXIST:
+                        ErrorMessage = "Something went massively wrong...";
+                        logger.LogWarning("Something went wrong");
+                        break;
+                }
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private void JoinGame()
+    {
+        // Validate the entered GUID
+        if (!Guid.TryParse(CurrentGameCode, out Guid guid))
+        {
+            // Invalid GUID
+            ErrorMessage = "Please enter a valid GUID.";
+            return;
+        }
+
+        CurrentGame = ticTacToeState.GetGame(guid);
+
+        if (CurrentGame == null)
+        {
+            ErrorMessage = "Game does not exist";
+            return;
+        }
+
+        // Valid GUID
+        ErrorMessage = "";
+
+        CurrentGame.Joinable = false;
+        var response = ticTacToeState.UpdateGame(guid, TicTacToeSquare.Cross, CurrentGame);
+        switch (response)
+        {
+            case TicTacToeUpdateResponse.UPDATED:
+                Playing = true;
+                PlayerType = TicTacToeSquare.Circle;
+                ticTacToeState.RaiseEvent(guid);
+                logger.LogInformation("Game with {guid} has now begun", guid);
+                break;
+
+            case TicTacToeUpdateResponse.DOES_NOT_EXIST:
+                ErrorMessage = "Something went massively wrong...";
+                logger.LogWarning("Something went wrong");
+                break;
+
+            case TicTacToeUpdateResponse.NOT_YOUR_TURN:
+                ErrorMessage = "Somehow its not the hosts turn???";
+                logger.LogWarning("Something went wrong");
+                break;
+        }
+    }
+
+    private void HostGame()
+    {
+        var gameGuid = ticTacToeState.CreateGame();
+        CurrentGameCode = gameGuid.ToString();
+        CurrentGame = ticTacToeState.GetGame(gameGuid);
+        Playing = true;
+        PlayerType = TicTacToeSquare.Cross;
+        logger.LogInformation("Game with guid {guid} has been hosted, waiting for players", gameGuid);
+    }
+}
